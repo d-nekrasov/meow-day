@@ -3,11 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Meow day</title>
+<title>Meow Day</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap" rel="stylesheet">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #97c96b; }
   canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
-  /* кнопки в углу */
+  /* главное меню: пустая лужайка, название и кнопка старта */
+  #menu { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; gap: clamp(20px, 5vh, 44px);
+          padding: 16px; transition: opacity .6s, transform .6s; }
+  #menu.gone { opacity: 0; transform: scale(1.06); pointer-events: none; }
+  .title { margin: 0; font: 600 clamp(54px, 14vw, 132px)/1 Fredoka, ui-rounded, "Nunito", system-ui, sans-serif; letter-spacing: .02em;
+           color: #fbf4e4; -webkit-text-stroke: .1em #3f2b23; paint-order: stroke fill; text-align: center;
+           filter: drop-shadow(0 6px 0 rgba(63, 43, 35, .25)); animation: bob 3.2s ease-in-out infinite; }
+  .title span { color: #f5c25a; }
+  #start { padding: 0; border: 0; background: none; cursor: pointer; border-radius: 40px; transition: transform .15s;
+           filter: drop-shadow(0 5px 0 rgba(63, 43, 35, .25)); }
+  #start:hover { transform: scale(1.06) rotate(-2deg); }
+  #start:active { transform: scale(.95); }
+  #start:focus-visible { outline: 4px solid #fff; outline-offset: 4px; }
+  #start img { width: min(300px, 68vw); height: auto; display: block; }
+  @keyframes bob { 50% { transform: translateY(-8px) rotate(-1.5deg); } }
+  @media (prefers-reduced-motion: reduce) { .title { animation: none; } }
+
+  /* кнопки в углу — появляются после старта */
+  .controls[hidden] { display: none; }
   .controls { position: fixed; top: 12px; right: 12px; display: flex; align-items: center; gap: 4px; }
   /* иконки обрезаны по рисунку (icons/*.webp), поэтому одинаковая высота = одинаковый размер нот */
   .icon-btn { height: 60px; padding: 8px; border: 0; border-radius: 16px; background: none; cursor: pointer;
@@ -54,7 +75,11 @@
 </head>
 <body>
 <canvas></canvas>
-<div class="controls">
+<div id="menu">
+  <h1 class="title">Meow <span>Day</span></h1>
+  <button id="start" type="button" aria-label="Начать"><img src="icons/start.webp" alt=""></button>
+</div>
+<div class="controls" hidden>
   <button id="playlist" class="icon-btn" type="button" aria-label="Выбрать мелодию" aria-haspopup="dialog"><img src="icons/playlist.webp" alt=""></button>
   <button id="sound" class="icon-btn" type="button"><img src="icons/sound_on.webp" alt=""></button>
 </div>
@@ -182,16 +207,23 @@ const VOICES = [
 ].map(f => new Audio('sound/' + f));
 
 const cats = [], flies = [];
-const nCats = clamp(Math.round(W * H / 70000), 6, 16);
-for (let i = 0; i < nCats; i++) { const b = BUILDS[(i * 3 + (i / BREEDS.length | 0)) % BUILDS.length]; cats.push({
-  breed: BREEDS[i % BREEDS.length], x: R(60, W - 60), y: R(140, H - 30), vx: 0, vy: 0, z: 0, vz: 0,
-  dir: pick([-1, 1]), run: 0, hold: 0, held: false, phase: 0, t: R(0, 9), size: b.size * R(.93, 1.07),
-  fat: b.fat * R(.95, 1.05), tall: b.tall * R(.96, 1.04), lazy: b.lazy, hop: b.hop, spd: 140 * b.spd * R(.9, 1.1), state: 'rest', timer: R(0, 4), target: null, sq: 0, landT: 9,
-  voice: pick(VOICES), pitch: clamp(R(.92, 1.08) / b.size ** .8, .8, 1.35),
-  tilt: 0, tiltV: 0, actT: 0, mate: null, role: '', box: 0, act: 'sit', stalk: false, watch: false, cool: 0, hvx: 0, hvy: 0,
-}); }
-for (const c of cats) if (Math.random() < .6) rest(c);
-for (let i = 0; i < nCats + 5; i++) {
+const catCount = () => clamp(Math.round(W * H / 70000), 6, 16);
+// котики выбегают на поле из-за левого и правого края, по очереди, каждый к своей точке
+function spawnCats() {
+  const n = catCount();
+  for (let i = 0; i < n; i++) {
+    const b = BUILDS[(i * 3 + (i / BREEDS.length | 0)) % BUILDS.length], side = i % 2 ? 1 : -1, size = b.size * R(.93, 1.07);
+    cats.push({
+      breed: BREEDS[i % BREEDS.length], x: side < 0 ? -90 * S : W + 90 * S, y: R(140, H - 30), vx: 0, vy: 0, z: 0, vz: 0,
+      dir: -side, run: 0, hold: 0, held: false, phase: 0, t: R(0, 9), size,
+      fat: b.fat * R(.95, 1.05), tall: b.tall * R(.96, 1.04), lazy: b.lazy, hop: b.hop, spd: 140 * b.spd * R(.9, 1.1),
+      state: 'enter', delay: i * R(.18, .35), tx: R(70, W - 70), ty: R(150, H - 40), timer: 0, target: null, sq: 0, landT: 9,
+      voice: pick(VOICES), pitch: clamp(R(.92, 1.08) / size ** .8, .8, 1.35),
+      tilt: 0, tiltV: 0, actT: 0, mate: null, role: '', box: 0, act: 'sit', stalk: false, watch: false, cool: 0, hvx: 0, hvy: 0,
+    });
+  }
+}
+for (let i = 0; i < catCount() + 5; i++) {
   flies.push({ x: R(40, W - 40), y: R(40, H - 120), a: R(0, 7), t: R(0, 9), seed: R(0, 9), panic: 0, col: i % 3, perch: null, landed: false, stay: 0 });
 }
 
@@ -247,7 +279,7 @@ function updateCat(c, dt) {
     if (c.act === 'stretch' && c.actT > 2.6) c.act = 'sit';                    // потянулся — и хватит
     if (c.state === 'rest' && c.timer < 0 && c.act === 'sleep') { c.act = 'stretch'; c.actT = 0; c.timer = 2.8; } // проснулся — потянулся
     if (c.state === 'rest' && c.timer < 0 && Math.random() < .45 / c.lazy) {
-      const mate = pick(cats.filter(o => o !== c && !o.held && o.state !== 'play' && o.act !== 'sleep'));
+      const mate = pick(cats.filter(o => o !== c && !o.held && o.state !== 'play' && o.state !== 'enter' && o.act !== 'sleep'));
       if (mate) startPlay(c, mate);
     }
     if (c.state === 'play' && (c.timer < 0 || c.mate.held || c.mate.state !== 'play')) rest(c);
@@ -255,6 +287,11 @@ function updateCat(c, dt) {
     else if (c.state === 'chase' && c.timer < 0) rest(c);
 
     let dvx = 0, dvy = 0;
+    if (c.state === 'enter' && (c.delay -= dt) < 0) { // выбегает из-за края к своей точке, а там — по своим делам
+      const dx = c.tx - c.x, dy = c.ty - c.y, d = Math.hypot(dx, dy) || 1, sp = Math.max(c.spd, 110) * 1.25 * S;
+      dvx = dx / d * sp; dvy = dy / d * sp;
+      if (d < 30 * s) { if (Math.random() < .5) rest(c); else { c.state = 'chase'; c.target = pick(flies); c.timer = R(3, 7); } }
+    }
     if (c.state === 'chase') {
       const dx = c.target.x - c.x, dy = c.target.y + 75 * s - c.y, d = Math.hypot(dx, dy);
       const sp = c.spd * S * Math.min(1, d / 60);
@@ -282,14 +319,14 @@ function updateCat(c, dt) {
       }
     }
     // котики не налезают друг на друга
-    for (const o of cats) if (o !== c && !o.held) {
+    if (c.state !== 'enter') for (const o of cats) if (o !== c && !o.held && o.state !== 'enter') {
       const dx = c.x - o.x, dy = (c.y - o.y) * 1.6, d = Math.hypot(dx, dy) || 1, min = 30 * s * (c.fat + o.fat);
       if (d < min) { dvx += dx / d * (min - d) * 4; dvy += dy / d * (min - d) * 2; }
     }
     const a = Math.min(1, dt * 3);
     c.vx = lerp(c.vx, dvx, a); c.vy = lerp(c.vy, dvy, a);
-    c.x = clamp(c.x + c.vx * dt, 35 * s, W - 35 * s);
-    c.y = clamp(c.y + c.vy * dt, 110 * s, H - 8);
+    c.x += c.vx * dt; c.y += c.vy * dt;
+    if (c.state !== 'enter') { c.x = clamp(c.x, 35 * s, W - 35 * s); c.y = clamp(c.y, 110 * s, H - 8); } // пока выбегает — можно быть за краем
 
     if (c.z > 0 || c.vz > 0) {
       c.vz -= 1500 * S * dt; c.z += c.vz * dt;
@@ -477,21 +514,21 @@ function drawFly(f) {
 
 // ---------- мяу: у каждого котика свой голос (VOICES) ----------
 function meow(c, volume = 1) {
-  if (!soundOn) return;
   const a = c.voice.cloneNode(); // клон — чтобы два быстрых клика не обрывали друг друга
   a.preservesPitch = false;      // скорость меняет и высоту: котёнок пищит, шарик басит
   a.playbackRate = c.pitch; a.volume = volume;
   a.play().catch(() => {});     // браузер может не дать играть до первого клика — не страшно
 }
 
-// ---------- звук: тихая фоновая музыка, плейлист и кнопка вкл/выкл (глушит и музыку, и мяу) ----------
+// ---------- звук: тихая фоновая музыка, плейлист и кнопка вкл/выкл (глушит только музыку, мяу остаётся) ----------
 // Сжатые копии исходников: afconvert -f m4af -d aac -b 128000 bg/1.wav bg/1.m4a
 const TRACKS = [
   { title: 'Солнечная лужайка', src: 'bg/1.m4a', dur: '2:10' },
   { title: 'Сонные котики', src: 'bg/2.m4a', dur: '2:44' },
 ];
 const store = (k, v) => { try { return v === undefined ? localStorage.getItem(k) : localStorage.setItem(k, v); } catch {} };
-let soundOn = store('cats-sound') !== 'off';
+let musicOn = store('cats-sound') !== 'off';
+let started = false; // музыка играет только после кнопки START
 let track = Math.random() * TRACKS.length | 0; // при каждой загрузке — случайная мелодия
 const music = new Audio(TRACKS[track].src);
 music.volume = .2;
@@ -499,17 +536,17 @@ music.addEventListener('ended', () => playTrack((track + 1) % TRACKS.length)); /
 
 const soundBtn = document.getElementById('sound'), songsDlg = document.getElementById('songs');
 new Image().src = 'icons/sound_off.webp'; // чтобы иконка не мигала при первом переключении
-function setSound(on) {
-  soundOn = on; store('cats-sound', on ? 'on' : 'off');
+function setMusic(on) {
+  musicOn = on; store('cats-sound', on ? 'on' : 'off');
   soundBtn.firstChild.src = on ? 'icons/sound_on.webp' : 'icons/sound_off.webp';
   soundBtn.setAttribute('aria-pressed', on);
-  soundBtn.setAttribute('aria-label', on ? 'Выключить звук' : 'Включить звук');
-  if (on) music.play().catch(() => {}); else music.pause();
+  soundBtn.setAttribute('aria-label', on ? 'Выключить музыку' : 'Включить музыку');
+  if (on && started) music.play().catch(() => {}); else music.pause();
 }
 function playTrack(i) {
   track = i;
   music.src = TRACKS[i].src;
-  if (soundOn) music.play().catch(() => {});
+  if (musicOn && started) music.play().catch(() => {});
   for (const b of document.querySelectorAll('.song')) b.setAttribute('aria-current', +b.dataset.i === i);
 }
 
@@ -523,7 +560,7 @@ songsDlg.addEventListener('click', e => {
   const b = e.target.closest('.song');
   if (b) { // выбрали мелодию — значит, хотят её слышать: включаем звук; ту же самую не перезапускаем
     if (+b.dataset.i !== track) playTrack(+b.dataset.i);
-    if (!soundOn) setSound(true);
+    if (!musicOn) setMusic(true);
     return;
   }
   const r = songsDlg.getBoundingClientRect(); // клик по затемнению вокруг окна — закрыть
@@ -533,10 +570,16 @@ for (const ev of ['play', 'pause']) music.addEventListener(ev, () => songsDlg.cl
 
 // фокус — на само окно, а не на крестик: иначе вокруг крестика сразу горит кольцо фокуса
 document.getElementById('playlist').addEventListener('click', () => { songsDlg.showModal(); songsDlg.focus(); });
-soundBtn.addEventListener('click', () => setSound(!soundOn));
-setSound(soundOn);
+soundBtn.addEventListener('click', () => setMusic(!musicOn));
+setMusic(musicOn);
 // браузер не даёт играть звук, пока по странице не кликнули, — запускаем музыку по первому касанию
-addEventListener('pointerdown', () => { if (soundOn) music.play().catch(() => {}); }, { once: true });
+// старт из главного меню: меню тает, играет музыка (если её не выключали), выбегают котики
+document.getElementById('start').addEventListener('click', () => {
+  document.getElementById('menu').classList.add('gone');
+  document.querySelector('.controls').hidden = false;
+  started = true; setMusic(musicOn);
+  spawnCats();
+}, { once: true });
 
 // ---------- мышь / тач ----------
 let order = cats;
@@ -579,7 +622,7 @@ function frame(now) {
   for (const f of flies) updateFly(f, dt);
   updateSky(dt);
 
-  ctx.drawImage(grass, 0, 0, W, H);
+  if (grass.width && grass.height) ctx.drawImage(grass, 0, 0, W, H); // окно бывает нулевого размера (скрытая вкладка) — иначе drawImage падает и цикл встаёт
 
   order = cats.slice().sort((a, b) => (a.held - b.held) || (a.y - b.y));
   if (loaded()) {
