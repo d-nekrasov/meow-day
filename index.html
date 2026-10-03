@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meow day</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #97c96b; }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  /* кнопки в углу */
+  .controls { position: fixed; top: 12px; right: 12px; display: flex; align-items: center; gap: 4px; }
+  /* иконки обрезаны по рисунку (icons/*.webp), поэтому одинаковая высота = одинаковый размер нот */
+  .icon-btn { height: 60px; padding: 8px; border: 0; border-radius: 16px; background: none; cursor: pointer;
+              filter: drop-shadow(0 2px 3px rgba(30, 70, 20, .35)); transition: transform .15s; }
+  .icon-btn:hover { transform: scale(1.08) rotate(-6deg); }
+  .icon-btn:active { transform: scale(.94); }
+  .icon-btn:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+  .icon-btn img { height: 100%; width: auto; display: block; }
+
+  /* окно выбора мелодии — в стиле тетрадки: кремовый фон, толстый коричневый контур */
+  #songs { width: min(340px, calc(100vw - 32px)); box-sizing: border-box; padding: 16px 16px 18px; border: 4px solid #3f2b23;
+           border-radius: 24px; background: #fbf4e4; color: #3f2b23; box-shadow: 0 7px 0 rgba(63, 43, 35, .25);
+           font: 600 17px/1.3 ui-rounded, "Nunito", "Segoe UI", system-ui, sans-serif; }
+  #songs[open] { animation: pop .2s ease-out; }
+  #songs::backdrop { background: rgba(40, 70, 20, .35); }
+  @keyframes pop { from { transform: scale(.9) translateY(8px); opacity: 0; } }
+  #songs header { display: flex; align-items: center; justify-content: space-between; }
+  #songs h2 { margin: 0 0 0 4px; font-size: 22px; }
+  #songs form { display: flex; }
+  .close { width: 40px; height: 40px; padding: 0; display: grid; place-items: center; border: 3px solid #3f2b23;
+           border-radius: 50%; background: #fff; color: inherit; cursor: pointer; }
+  .close svg { width: 14px; height: 14px; }
+  #songs:focus { outline: none; }
+  .close:hover, .song:hover { background: #f3e8cc; }
+  #song-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 10px; }
+  .song { width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 3px solid #3f2b23;
+          border-radius: 16px; background: #fff; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .song[aria-current="true"] { background: #ffe7a3; }
+  .song .dur { margin-left: auto; opacity: .6; font-variant-numeric: tabular-nums; }
+  .close:focus-visible, .song:focus-visible { outline: 3px solid #e8873a; outline-offset: 2px; }
+  /* значок слева: номер, а у текущей — полоски эквалайзера (прыгают, пока играет) */
+  .badge { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: 50%; background: #3f2b23; color: #fbf4e4; font-size: 14px; }
+  .eq { display: none; height: 14px; gap: 2px; align-items: flex-end; }
+  .eq i { width: 3px; height: 100%; background: currentColor; border-radius: 2px; }
+  .song[aria-current="true"] .num { display: none; }
+  .song[aria-current="true"] .eq { display: flex; }
+  #songs.playing .eq i { animation: eq .8s ease-in-out infinite alternate; }
+  #songs.playing .eq i:nth-child(2) { animation-delay: -.3s; }
+  #songs.playing .eq i:nth-child(3) { animation-delay: -.55s; }
+  .eq i { transform-origin: bottom; transform: scaleY(.5); }
+  @keyframes eq { from { transform: scaleY(.25); } to { transform: scaleY(1); } }
+  @media (prefers-reduced-motion: reduce) { #songs[open], #songs.playing .eq i { animation: none; } }
+</style>
+</head>
+<body>
+<canvas></canvas>
+<div class="controls">
+  <button id="playlist" class="icon-btn" type="button" aria-label="Выбрать мелодию" aria-haspopup="dialog"><img src="icons/playlist.webp" alt=""></button>
+  <button id="sound" class="icon-btn" type="button"><img src="icons/sound_on.webp" alt=""></button>
+</div>
+<dialog id="songs" aria-labelledby="songs-title" tabindex="-1">
+  <header>
+    <h2 id="songs-title">Музыка</h2>
+    <form method="dialog"><button class="close" aria-label="Закрыть"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></button></form>
+  </header>
+  <ul id="song-list"></ul>
+</dialog>
+<script src="sprites.js"></script>
+<script>
+const cv = document.querySelector('canvas'), ctx = cv.getContext('2d');
+let W = 0, H = 0, S = 1;
+function resize() {
+  const d = devicePixelRatio || 1;
+  W = innerWidth; H = innerHeight;
+  cv.width = W * d; cv.height = H * d;
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+  S = Math.max(.6, Math.min(1.25, Math.min(W, H) / 650));
+}
+addEventListener('resize', resize); resize();
+
+// трава рисуется один раз в отдельный canvas при ресайзе
+let grass;
+function makeGrass() {
+  const d = devicePixelRatio || 1;
+  grass = document.createElement('canvas'); grass.width = W * d; grass.height = H * d;
+  const g = grass.getContext('2d'); g.scale(d, d);
+  const bg = g.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#a6d377'); bg.addColorStop(1, '#86bf5e');
+  g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  for (let i = 0; i < W * H / 9000; i++) { // светлые и тёмные пятна
+    g.fillStyle = Math.random() < .5 ? 'rgba(255,255,200,.07)' : 'rgba(40,90,20,.06)';
+    g.beginPath(); g.ellipse(R(0, W), R(0, H), R(30, 90), R(15, 40), 0, 0, 7); g.fill();
+  }
+  g.lineCap = 'round';
+  for (let i = 0; i < W * H / 600; i++) { // травинки пучками
+    const x = R(0, W), y = R(0, H), n = 2 + (Math.random() * 3 | 0), h = R(6, 14) * S;
+    g.strokeStyle = pick(['#6ea64a', '#79b153', '#5f9840', '#94c96a', '#b4dc86']);
+    g.lineWidth = R(1.2, 2); g.globalAlpha = R(.45, .8);
+    g.beginPath();
+    for (let j = 0; j < n; j++) { const a = (j - (n - 1) / 2) * .35 + R(-.15, .15); g.moveTo(x, y); g.quadraticCurveTo(x + a * h * .4, y - h * .6, x + a * h, y - h); }
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+  for (let i = 0; i < W * H / 14000; i++) { // цветочки и клевер
+    const x = R(0, W), y = R(0, H), col = pick(['#fff', '#fff', '#ffe27a', '#f6c2d4']);
+    for (let p = 0; p < 5; p++) { g.fillStyle = col; g.beginPath(); g.arc(x + Math.cos(p * 1.26) * 2.6 * S, y + Math.sin(p * 1.26) * 2.6 * S, 2 * S, 0, 7); g.fill(); }
+    g.fillStyle = '#f2b630'; g.beginPath(); g.arc(x, y, 1.4 * S, 0, 7); g.fill();
+  }
+}
+addEventListener('resize', () => makeGrass());
+
+const R = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[Math.random() * a.length | 0];
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const ell = (x, y, rx, ry) => { ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); };
+const angDiff = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a));
+
+// ---------- день и ночь ----------
+const DAY = 240;            // полные сутки, секунд
+let clock = DAY * .12;      // начинаем с позднего утра
+let night = 0, dusk = 0;    // 0…1: насколько темно и насколько «закатно» сейчас
+function updateSky(dt) {
+  clock += dt;
+  const c = -Math.cos(clock / DAY * Math.PI * 2);        // −1 полдень … 1 полночь
+  const u = clamp((c + .05) / .65, 0, 1);
+  night = u * u * (3 - 2 * u);                          // плавные сумерки, а не резкое переключение
+  dusk = Math.max(0, 1 - Math.abs(c) / .4);            // золотистый закат/рассвет — пока ещё светло
+}
+
+const INK = '#3f2b23';
+
+// ---------- спрайты ----------
+// Порода = лист спрайтов + где на нём какие кадры. Кадр — [строка, столбец] в FRAMES (sprites.js).
+// Все коты на листах смотрят вправо.
+const seq = (r, c0, n) => Array.from({ length: n }, (_, i) => [r, c0 + i]);
+const CALICO = { // cat1.png (+ cat2.png — в руке): сетка 6×4
+  sheet: 'cat1.png', sit: [[0, 0], [0, 1], [0, 2], [0, 1]], wag: [0, 3], belly: seq(0, 4, 2),
+  run: seq(1, 0, 6), sleep: seq(2, 0, 4), lie: [2, 4], stretch: [2, 5], stretchFlip: true,
+  look: [[3, 0], [3, 5]], paw: [3, 1], stand: [3, 2], jump: [3, 3], crouch: [3, 4],
+  held: 'cat2.png', heldK: .37, meow: [0, 0], hang: [[0, 1], [0, 2], [1, 3], [1, 1]], leanR: [1, 0], leanL: [1, 2],
+};
+const breed = sheet => ({ // cat3…cat7.png: всё на одном листе, сетка 8×4
+  sheet, sit: [[0, 0], [0, 0], [0, 0], [0, 3], [0, 1], [0, 2], [0, 1]], wag: [0, 3], belly: seq(0, 4, 2),
+  run: [[0, 6], [0, 7], ...seq(1, 0, 4)], sleep: seq(1, 4, 4), lie: [2, 0], stretch: [2, 1],
+  look: [[2, 2], [2, 7]], paw: [2, 3], stand: [2, 4], jump: [2, 5], crouch: [2, 6],
+  held: sheet, meow: [3, 0], hang: seq(3, 1, 7),
+});
+const BREEDS = [CALICO, ...[3, 4, 5, 6, 7].map(i => breed(`cat${i}.png`))];
+const IMG = {};
+for (const f of ['bf.png', ...BREEDS.flatMap(b => [b.sheet, b.held])]) if (!IMG[f]) { IMG[f] = new Image(); IMG[f].src = f; }
+const loaded = () => Object.values(IMG).every(i => i.complete && i.naturalWidth);
+const rect = (sheet, [r, c]) => FRAMES[sheet][r][c];
+for (const b of BREEDS) {
+  b.k = 96 / rect(b.sheet, b.sit[0])[3];   // пикселей экрана на пиксель листа: сидячий кот ≈ 96px при S = 1
+  b.heldK ??= b.k;                          // у новых листов «в руке» нарисован в том же масштабе
+}
+const hangDepth = (c, s) => (rect(c.breed.held, c.breed.hang[0])[3] * .85 * c.breed.heldK - 55) * s; // насколько лапы ниже курсора
+
+// Телосложения: fat — ширина, tall — рост, spd — скорость, lazy — сколько отдыхает, hop — высота прыжка
+const BUILDS = [
+  { fat: 1.3,  tall: 1.02, size: 1.05, spd: .6,  lazy: 2.2, hop: .7 },  // пухляш: медленный, любит полежать
+  { fat: 1.45, tall: .98,  size: 1.1,  spd: .42, lazy: 3.2, hop: .5 },  // шарик: почти не бегает
+  { fat: 1,    tall: 1,    size: 1,    spd: 1,   lazy: 1,   hop: 1 },   // обычный
+  { fat: .82,  tall: 1.08, size: 1,    spd: 1.35, lazy: .6, hop: 1.25 }, // стройный: шустрый и прыгучий
+  { fat: .95,  tall: .95,  size: .72,  spd: 1.2, lazy: .45, hop: 1.1 }, // котёнок: неугомонный
+];
+
+// голоса котиков — файлы из sound/; звуки: steffcaffrey, freesound.org
+const VOICES = [
+  '262306__steffcaffrey__cat_twit1.wav',
+  '262307__steffcaffrey__cat-happy-purrtwitter2.wav',
+  '262308__steffcaffrey__cat-happy-purrtwit3.wav',
+  '262309__steffcaffrey__cat-purrtwit4.wav',
+  '262310__steffcaffrey__cat-purrtwit5.wav',
+  '262311__steffcaffrey__cat-purrtwit6.wav',
+  '262312__steffcaffrey__cat-meow1.wav',
+  '262313__steffcaffrey__cat-meow2.wav',
+  '262314__steffcaffrey__cat-meow3.wav',
+  '479271__steffcaffrey__new-cat-meow-2.wav',
+  '479272__steffcaffrey__new-cat-meow-1.wav',
+].map(f => new Audio('sound/' + f));
+
+const cats = [], flies = [];
+const nCats = clamp(Math.round(W * H / 70000), 6, 16);
+for (let i = 0; i < nCats; i++) { const b = BUILDS[(i * 3 + (i / BREEDS.length | 0)) % BUILDS.length]; cats.push({
+  breed: BREEDS[i % BREEDS.length], x: R(60, W - 60), y: R(140, H - 30), vx: 0, vy: 0, z: 0, vz: 0,
+  dir: pick([-1, 1]), run: 0, hold: 0, held: false, phase: 0, t: R(0, 9), size: b.size * R(.93, 1.07),
+  fat: b.fat * R(.95, 1.05), tall: b.tall * R(.96, 1.04), lazy: b.lazy, hop: b.hop, spd: 140 * b.spd * R(.9, 1.1), state: 'rest', timer: R(0, 4), target: null, sq: 0, landT: 9,
+  voice: pick(VOICES), pitch: clamp(R(.92, 1.08) / b.size ** .8, .8, 1.35),
+  tilt: 0, tiltV: 0, actT: 0, mate: null, role: '', box: 0, act: 'sit', stalk: false, watch: false, cool: 0, hvx: 0, hvy: 0,
+}); }
+for (const c of cats) if (Math.random() < .6) rest(c);
+for (let i = 0; i < nCats + 5; i++) {
+  flies.push({ x: R(40, W - 40), y: R(40, H - 120), a: R(0, 7), t: R(0, 9), seed: R(0, 9), panic: 0, col: i % 3, perch: null, landed: false, stay: 0 });
+}
+
+// ---------- update ----------
+const ptr = { x: 0, y: 0 };
+let grabbed = null;
+
+// чем занят отдыхающий котик: сидит, умывается или спит (ленивые спят чаще)
+function rest(c) {
+  const r = Math.random(), sleepP = Math.min(.85, .22 * c.lazy + .45 * night); // ночью засыпают чаще
+  c.act = r < sleepP ? 'sleep' : r < sleepP + .2 ? 'wash' : r < sleepP + .32 ? 'roll' : r < sleepP + .44 ? 'stretch' : r < sleepP + .56 ? 'lie' : 'sit';
+  c.actT = 0;
+  c.state = 'rest'; c.target = null;
+  c.timer = R(3, 6) * c.lazy * (c.act === 'sleep' ? 2.5 : 1);
+}
+
+// игра в догонялки: chaser догоняет, при касании котики «боксируют» лапками и меняются ролями
+function startPlay(a, b) {
+  const time = R(7, 12);
+  for (const [c, role] of [[a, 'chaser'], [b, 'runner']]) {
+    Object.assign(c, { state: 'play', mate: c === a ? b : a, role, timer: time, box: 0, act: 'sit', target: null });
+  }
+  a.cool = .4;
+}
+
+function nearestFly(x, y) {
+  let best = flies[0], bd = 1e9;
+  for (const f of flies) { const d = (f.x - x) ** 2 + (f.y - y) ** 2; if (d < bd) { bd = d; best = f; } }
+  return best;
+}
+
+function updateCat(c, dt) {
+  const s = c.size * S;
+  c.t += dt;
+  c.stalk = false;
+  if (c.state !== 'play') c.box = 0; // бокс бывает только в игре; игра могла оборваться (таймер, схватили)
+  // иногда мяукает сам: в среднем раз в ~4 минуты на котика, тише, чем когда хватают; спящие молчат
+  if (!c.held && c.act !== 'sleep' && Math.random() < dt / 240) meow(c, .5);
+
+  let tiltTarget = 0;
+  if (c.held) {
+    const ox = c.x, oy = c.y, f = Math.min(1, dt * 18);
+    c.x = lerp(c.x, ptr.x, f);
+    c.y = lerp(c.y, ptr.y + 145 * s, f); // висит за загривок: курсор у затылка, тень под лапами
+    c.z = lerp(c.z, 90 * s, f);
+    c.vz = 0; c.act = 'sit';
+    c.hvx = lerp(c.hvx, (c.x - ox) / dt, .3);
+    c.hvy = lerp(c.hvy, (c.y - oy) / dt, .3);
+    tiltTarget = clamp(c.hvx * .0016, -.9, .9);
+  } else {
+    c.cool -= dt; c.timer -= dt;
+    c.actT += dt;
+    if (c.act === 'stretch' && c.actT > 2.6) c.act = 'sit';                    // потянулся — и хватит
+    if (c.state === 'rest' && c.timer < 0 && c.act === 'sleep') { c.act = 'stretch'; c.actT = 0; c.timer = 2.8; } // проснулся — потянулся
+    if (c.state === 'rest' && c.timer < 0 && Math.random() < .45 / c.lazy) {
+      const mate = pick(cats.filter(o => o !== c && !o.held && o.state !== 'play' && o.act !== 'sleep'));
+      if (mate) startPlay(c, mate);
+    }
+    if (c.state === 'play' && (c.timer < 0 || c.mate.held || c.mate.state !== 'play')) rest(c);
+    if (c.state === 'rest' && c.timer < 0) { c.state = 'chase'; c.target = pick(flies); c.timer = R(4, 9) / Math.sqrt(c.lazy); }
+    else if (c.state === 'chase' && c.timer < 0) rest(c);
+
+    let dvx = 0, dvy = 0;
+    if (c.state === 'chase') {
+      const dx = c.target.x - c.x, dy = c.target.y + 75 * s - c.y, d = Math.hypot(dx, dy);
+      const sp = c.spd * S * Math.min(1, d / 60);
+      if (d > 2) { dvx = dx / d * sp; dvy = dy / d * sp; }
+      c.stalk = d < 110 * s && c.z === 0; // подкрадывается перед прыжком
+      if (d < 50 * s && c.z === 0 && c.cool < 0) { c.vz = R(400, 520) * S * Math.sqrt(c.hop); c.cool = R(1, 2.2) * c.lazy ** .5; }
+    }
+    if (c.state === 'play') {
+      const m = c.mate, dx = m.x - c.x, dy = m.y - c.y, d = Math.hypot(dx, dy) || 1;
+      if (c.box > 0) {                          // бокс: стоят друг напротив друга и машут лапками
+        c.box -= dt;
+        const gap = 40 * s * (c.fat + m.fat);   // держат дистанцию вытянутой лапы
+        if (d < gap) { dvx = -dx / d * (gap - d) * 4; dvy = -dy / d * (gap - d) * 4; }
+        if (c.z === 0 && Math.random() < dt * 2.5) c.vz = R(140, 220) * S;
+        if (c.box <= 0 && c.role === 'chaser') { c.role = 'runner'; m.role = 'chaser'; m.cool = .5; }
+      } else if (c.role === 'chaser') {
+        if (c.cool < 0) { const sp = c.spd * 1.15 * S; dvx = dx / d * sp; dvy = dy / d * sp; }
+        if (d < 40 * s * (c.fat + m.fat) && c.cool < 0 && m.box <= 0) c.box = m.box = R(1, 1.7);
+      } else {                                  // убегает, виляя, и не упирается в края
+        let ax = -dx / d + Math.sin(c.t * 2 + c.size * 5) * .6, ay = -dy / d + Math.cos(c.t * 1.7) * .6;
+        if (c.x < 120 || c.x > W - 120) ax += Math.sign(W / 2 - c.x) * 1.5;
+        if (c.y < 160 || c.y > H - 80) ay += Math.sign(H / 2 - c.y) * 1.5;
+        const al = Math.hypot(ax, ay) || 1, sp = c.spd * .9 * S;
+        dvx = ax / al * sp; dvy = ay / al * sp;
+      }
+    }
+    // котики не налезают друг на друга
+    for (const o of cats) if (o !== c && !o.held) {
+      const dx = c.x - o.x, dy = (c.y - o.y) * 1.6, d = Math.hypot(dx, dy) || 1, min = 30 * s * (c.fat + o.fat);
+      if (d < min) { dvx += dx / d * (min - d) * 4; dvy += dy / d * (min - d) * 2; }
+    }
+    const a = Math.min(1, dt * 3);
+    c.vx = lerp(c.vx, dvx, a); c.vy = lerp(c.vy, dvy, a);
+    c.x = clamp(c.x + c.vx * dt, 35 * s, W - 35 * s);
+    c.y = clamp(c.y + c.vy * dt, 110 * s, H - 8);
+
+    if (c.z > 0 || c.vz > 0) {
+      c.vz -= 1500 * S * dt; c.z += c.vz * dt;
+      if (c.z <= 0) { c.z = 0; c.vz = 0; c.landT = 0; }
+    }
+  }
+
+  // маятник при перетаскивании + покачивание после отпускания
+  c.tiltV += ((tiltTarget - c.tilt) * 90 - c.tiltV * 7) * dt;
+  c.tilt += c.tiltV * dt;
+
+  const speed = Math.hypot(c.vx, c.vy);
+  c.hold = lerp(c.hold, c.held ? 1 : 0, Math.min(1, dt * 10));
+  c.phase += speed * dt * .11; // кадр бега — по пройденному пути, ноги не скользят
+
+  const fly = c.state === 'play' ? c.mate : c.target || nearestFly(c.x, c.y);
+  const busy = c.state === 'rest' && c.act !== 'sit';
+  const wantDir = c.box > 0 ? Math.sign(c.mate.x - c.x) || 1 : c.held || busy ? Math.sign(c.dir) || 1 : Math.abs(c.vx) > 15 ? Math.sign(c.vx) : Math.sign(fly.x - c.x) || 1;
+  c.dir += (wantDir - c.dir) * Math.min(1, dt * 7);
+  // бабочка прямо над головой — сидит и смотрит вверх
+  const nf = nearestFly(c.x, c.y - 120 * s);
+  c.watch = Math.abs(nf.x - c.x) < 110 * s && nf.y < c.y - 70 * s && nf.y > c.y - 260 * s;
+
+  c.landT += dt;
+  c.sq = Math.exp(-c.landT * 6) * Math.cos(c.landT * 20) * .2 - c.hold * .07;
+}
+
+// на котика можно сесть, пока он спокойно отдыхает
+const calm = c => !c.held && c.state === 'rest' && c.z === 0 && c.act !== 'stretch' && Math.hypot(c.vx, c.vy) < 20;
+
+// куда садиться: макушка сидящего, спина клубка, пузико лежащего на спине — по высоте текущего кадра
+function perchPoint(c) {
+  const b = c.breed, s = c.size * S, [kind, f] = pose(c), [, , fw, fh] = rect(b.sheet, f);
+  const lie = c.act === 'lie' && c.state === 'rest'; // лежит: голова торчит выше спины, садимся на спину
+  const top = kind === 'belly' ? fw * .72 : fh * (lie ? .74 : kind === 'curl' ? .86 : .9);
+  return [c.x + Math.sign(c.dir) * (kind === 'curl' ? -10 : 4) * s, c.y - top * b.k * s * c.tall - 6 * S];
+}
+
+function updateFly(f, dt) {
+  f.t += dt;
+  // изредка присматривает себе котика (в среднем раз в ~30 с), по одной бабочке на котика
+  if (!f.perch && f.panic === 0 && Math.random() < dt / 30) {
+    const c = pick(cats.filter(c => calm(c) && !flies.some(o => o.perch === c)));
+    if (c) Object.assign(f, { perch: c, landed: false, stay: R(4, 10) });
+  }
+  if (f.perch) {
+    const c = f.perch;
+    if (!calm(c)) { f.perch = null; f.panic = 1; f.a = -Math.PI / 2; }  // котик зашевелился — вспорхнула
+    else {
+      const [px, py] = perchPoint(c), dx = px - f.x, dy = py - f.y, d = Math.hypot(dx, dy) || 1;
+      if (!f.landed) {                                                  // подлетает, сбавляя скорость
+        const sp = Math.min(80 * S, d * 2.5 + 15 * S);
+        f.a = Math.atan2(dy, dx);
+        f.x += dx / d * Math.min(d, sp * dt); f.y += dy / d * Math.min(d, sp * dt) + Math.sin(f.t * 5) * 10 * dt;
+        if (d < 3) f.landed = true;
+      } else {
+        f.x = lerp(f.x, px, Math.min(1, dt * 10)); f.y = lerp(f.y, py, Math.min(1, dt * 10)); // держится, даже если котик дышит
+        if ((f.stay -= dt) < 0) { f.perch = null; f.a = -Math.PI / 2 + R(-.8, .8); }
+      }
+      return;
+    }
+  }
+  let want = f.a + Math.sin(f.t * .7 + f.seed) * 1.2;
+  const m = 60;
+  if (f.x < m || f.x > W - m || f.y < m || f.y > H - 140 * S) want = Math.atan2(H / 2 - f.y, W / 2 - f.x);
+  // убегаем от ближайшей кошачьей морды
+  for (const c of cats) {
+    const s = c.size * S, dx = f.x - (c.x + c.dir * 25 * s), dy = f.y - (c.y - c.z - 70 * s);
+    if (dx * dx + dy * dy < (95 * s) ** 2) { f.panic = 1; want = Math.atan2(dy, dx); }
+  }
+  f.panic = Math.max(0, f.panic - dt * .8);
+  f.a += angDiff(f.a, want) * Math.min(1, dt * (1.5 + f.panic * 6));
+  const sp = (55 + f.panic * 170) * S;
+  f.x += Math.cos(f.a) * sp * dt;
+  f.y += (Math.sin(f.a) * sp + Math.sin(f.t * 5 + f.seed) * 25) * dt;
+  f.x = clamp(f.x, 10, W - 10); f.y = clamp(f.y, 10, H - 10);
+}
+
+// ---------- draw ----------
+// какой кадр показать: [вид позы, кадр]
+function pose(c) {
+  const b = c.breed, t = c.t, at = (fps, seq) => seq[Math.floor(t * fps) % seq.length];
+  if (c.box > 0) return ['up', at(6, [b.paw, b.stand])];          // бокс: машет лапами
+  if (c.z > 0) return ['up', c.vz > 0 ? b.jump : b.stand];        // прыжок
+  if (Math.hypot(c.vx, c.vy) > 25 * S) return ['run', b.run[Math.floor(c.phase) % b.run.length]];
+  if (c.stalk) return ['crouch', b.crouch];                       // присел перед прыжком
+  if (c.state === 'rest') switch (c.act) {
+    case 'sleep': return ['curl', at(2.2, [...b.sleep, b.sleep[2], b.sleep[1]])]; // дышит во сне
+    case 'stretch': return ['stretch', b.stretch];
+    case 'lie': return ['curl', b.lie];
+    case 'wash': return ['up', at(2.5, [b.paw, b.paw, b.look[0]])]; // лапку ко рту и обратно
+    case 'roll': return ['belly', at(3, b.belly)];
+  }
+  if (c.watch) return ['sit', at(.5, b.look)];
+  if (Math.sin(t * .6 + c.fat * 9) > .8) return ['sit', b.wag];   // иногда виляет хвостом
+  return ['sit', at(1.2, b.sit)];
+}
+
+function drawHeld(c, s) {
+  const b = c.breed, t = c.t - c.grabT, lean = b.leanL && Math.abs(c.tilt) > .22;
+  const f = t < .5 ? b.meow : lean ? (c.tilt > 0 ? b.leanL : b.leanR) : b.hang[Math.floor(t * 1.3) % b.hang.length];
+  const [fx, fy, fw, fh] = rect(b.held, f);
+  ctx.fillStyle = 'rgba(30,70,20,.16)';
+  ell(c.x, c.y, 30 * s * c.fat, 6 * s); ctx.fill();
+  ctx.save();
+  ctx.translate(c.x, c.y - c.z - 55 * s);
+  ctx.rotate(c.tilt * (b.leanL ? .5 : 1)); // если есть кадры с наклоном — они качаются сами, вращаем вполсилы
+  ctx.scale(b.heldK * s * c.fat ** .5, b.heldK * s * c.tall);
+  ctx.drawImage(IMG[b.held], fx, fy, fw, fh, -fw / 2, -fh * .15, fw, fh); // курсор держит за загривок
+  ctx.restore();
+}
+
+function drawCat(c) {
+  const s = c.size * S;
+  if (c.held) return drawHeld(c, s);
+  const b = c.breed, [kind, f] = pose(c), [fx, fy, fw, fh] = rect(b.sheet, f), img = IMG[b.sheet];
+  const lying = kind === 'belly'; // кадры «на спине» нарисованы стоймя — кладём их на траву
+  const curled = kind === 'curl'; // спит клубком или лежит — тень по ширине тела, прямо под ним
+  const sx = b.k * s * c.fat ** .5, sy = b.k * s * c.tall;
+  const sh = 1 / (1 + c.z / (60 * S));
+  ctx.fillStyle = 'rgba(30,70,20,.22)';
+  if (lying) ell(c.x, c.y - 4 * s, fh / 2 * sx * .85, 8 * s); // тень во всю длину лежащего тела
+  else if (curled) ell(c.x, c.y - 3 * s, fw / 2 * sx * .88, 7 * s);
+  else ell(c.x, c.y, 38 * s * c.fat * sh, 7 * s * sh);
+  ctx.fill();
+
+  ctx.save();
+  ctx.translate(c.x, c.y - c.z - 55 * s); ctx.rotate(c.tilt); ctx.translate(0, 55 * s);
+  const d = Math.sign(c.dir) * (.7 + .3 * Math.abs(c.dir)) * (kind === 'stretch' && b.stretchFlip ? -1 : 1);
+  ctx.scale(d * sx * (1 + c.sq), sy * (1 - c.sq));
+  if (lying) { // голова в сторону, лапки вверх; перекатывается с боку на бок
+    ctx.translate(0, -fw * .3); ctx.rotate(-Math.PI / 2 + Math.sin(c.t * 2.5) * .12);
+    ctx.drawImage(img, fx, fy, fw, fh, -fw / 2, -fh / 2, fw, fh);
+  } else ctx.drawImage(img, fx, fy, fw, fh, -fw / 2, -fh + (curled ? fh * .065 : 0), fw, fh); // клубок чуть «проседает» в тень
+  ctx.restore();
+
+  if (kind === 'curl' && c.act === 'sleep') { // Zzz — только над спящим клубком
+    const zx = c.x + Math.sign(c.dir) * 34 * s, zy = c.y - 62 * s;
+    ctx.fillStyle = INK; ctx.textAlign = 'center';
+    for (let i = 0; i < 3; i++) {
+      const u = (c.t * .4 + i / 3) % 1;
+      ctx.globalAlpha = Math.sin(u * Math.PI);
+      ctx.font = `600 ${(9 + u * 7) * s}px sans-serif`;
+      ctx.fillText('z', zx + Math.sign(c.dir) * u * 16 * s + Math.sin(u * 6) * 3 * s, zy - u * 34 * s);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// светлячки: живут всегда, но видны только в темноте
+const bugs = Array.from({ length: 22 }, () => ({ x: R(0, W), y: R(0, H), a: R(0, 7), t: R(0, 9), w: R(1.5, 3) }));
+function drawNight(dt) {
+  if (night + dusk < .01) return;
+  // закат: тёплая подсветка; ночь: синий «мультипликативный» тон + темнее по краям
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.fillStyle = `rgba(255, 160, 95, ${dusk * .45})`; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = `rgba(48, 62, 140, ${night * .72})`; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over';
+  const v = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .3, W / 2, H / 2, Math.hypot(W, H) * .6);
+  v.addColorStop(0, 'rgba(10,14,40,0)'); v.addColorStop(1, `rgba(10,14,40,${night * .45})`);
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  // светлячки плавают и мерцают
+  ctx.globalCompositeOperation = 'lighter';
+  for (const b of bugs) {
+    b.t += dt; b.a += Math.sin(b.t * .7) * dt;
+    b.x = (b.x + Math.cos(b.a) * 14 * dt + W) % W; b.y = (b.y + Math.sin(b.a) * 10 * dt + H) % H;
+    const glow = night * (.5 + .5 * Math.sin(b.t * b.w)) ** 3;
+    if (glow < .02) continue;
+    const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, 14 * S);
+    g.addColorStop(0, `rgba(255,250,170,${glow})`); g.addColorStop(.25, `rgba(220,255,120,${glow * .5})`); g.addColorStop(1, 'rgba(160,255,80,0)');
+    ctx.fillStyle = g; ctx.fillRect(b.x - 14 * S, b.y - 14 * S, 28 * S, 28 * S);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawFly(f) {
+  const sitting = f.perch && f.landed;
+  const frame = sitting ? [0, 1, 2, 1][Math.floor(f.t * 1.6) % 4] : Math.floor(f.t * (12 + f.panic * 10) + f.seed) % 4; // сидя — медленно складывает крылья
+  const [fx, fy, fw, fh] = rect('bf.png', [f.col, frame]);
+  const k = .13 * S;
+  ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(sitting ? 0 : Math.cos(f.a) * .35);
+  ctx.drawImage(IMG['bf.png'], fx, fy, fw, fh, -fw / 2 * k, -fh / 2 * k, fw * k, fh * k);
+  ctx.restore();
+}
+
+// ---------- мяу: у каждого котика свой голос (VOICES) ----------
+function meow(c, volume = 1) {
+  if (!soundOn) return;
+  const a = c.voice.cloneNode(); // клон — чтобы два быстрых клика не обрывали друг друга
+  a.preservesPitch = false;      // скорость меняет и высоту: котёнок пищит, шарик басит
+  a.playbackRate = c.pitch; a.volume = volume;
+  a.play().catch(() => {});     // браузер может не дать играть до первого клика — не страшно
+}
+
+// ---------- звук: тихая фоновая музыка, плейлист и кнопка вкл/выкл (глушит и музыку, и мяу) ----------
+// Сжатые копии исходников: afconvert -f m4af -d aac -b 128000 bg/1.wav bg/1.m4a
+const TRACKS = [
+  { title: 'Солнечная лужайка', src: 'bg/1.m4a', dur: '2:10' },
+  { title: 'Сонные котики', src: 'bg/2.m4a', dur: '2:44' },
+];
+const store = (k, v) => { try { return v === undefined ? localStorage.getItem(k) : localStorage.setItem(k, v); } catch {} };
+let soundOn = store('cats-sound') !== 'off';
+let track = Math.random() * TRACKS.length | 0; // при каждой загрузке — случайная мелодия
+const music = new Audio(TRACKS[track].src);
+music.volume = .2;
+music.addEventListener('ended', () => playTrack((track + 1) % TRACKS.length)); // доиграла — следующая по кругу
+
+const soundBtn = document.getElementById('sound'), songsDlg = document.getElementById('songs');
+new Image().src = 'icons/sound_off.webp'; // чтобы иконка не мигала при первом переключении
+function setSound(on) {
+  soundOn = on; store('cats-sound', on ? 'on' : 'off');
+  soundBtn.firstChild.src = on ? 'icons/sound_on.webp' : 'icons/sound_off.webp';
+  soundBtn.setAttribute('aria-pressed', on);
+  soundBtn.setAttribute('aria-label', on ? 'Выключить звук' : 'Включить звук');
+  if (on) music.play().catch(() => {}); else music.pause();
+}
+function playTrack(i) {
+  track = i;
+  music.src = TRACKS[i].src;
+  if (soundOn) music.play().catch(() => {});
+  for (const b of document.querySelectorAll('.song')) b.setAttribute('aria-current', +b.dataset.i === i);
+}
+
+// список мелодий
+document.getElementById('song-list').innerHTML = TRACKS.map((t, i) => `
+  <li><button class="song" type="button" data-i="${i}" aria-current="${i === track}">
+    <span class="badge"><span class="num">${i + 1}</span><span class="eq" aria-hidden="true"><i></i><i></i><i></i></span></span>
+    <span>${t.title}</span><span class="dur">${t.dur}</span>
+  </button></li>`).join('');
+songsDlg.addEventListener('click', e => {
+  const b = e.target.closest('.song');
+  if (b) { // выбрали мелодию — значит, хотят её слышать: включаем звук; ту же самую не перезапускаем
+    if (+b.dataset.i !== track) playTrack(+b.dataset.i);
+    if (!soundOn) setSound(true);
+    return;
+  }
+  const r = songsDlg.getBoundingClientRect(); // клик по затемнению вокруг окна — закрыть
+  if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) songsDlg.close();
+});
+for (const ev of ['play', 'pause']) music.addEventListener(ev, () => songsDlg.classList.toggle('playing', !music.paused));
+
+// фокус — на само окно, а не на крестик: иначе вокруг крестика сразу горит кольцо фокуса
+document.getElementById('playlist').addEventListener('click', () => { songsDlg.showModal(); songsDlg.focus(); });
+soundBtn.addEventListener('click', () => setSound(!soundOn));
+setSound(soundOn);
+// браузер не даёт играть звук, пока по странице не кликнули, — запускаем музыку по первому касанию
+addEventListener('pointerdown', () => { if (soundOn) music.play().catch(() => {}); }, { once: true });
+
+// ---------- мышь / тач ----------
+let order = cats;
+function hit(x, y) {
+  for (let i = order.length - 1; i >= 0; i--) {
+    const c = order[i], s = c.size * S;
+    const dx = (x - c.x) / (46 * s * c.fat ** .5), dy = (y - (c.y - c.z - 46 * s)) / (50 * s);
+    if (dx * dx + dy * dy < 1) return c;
+  }
+  return null;
+}
+cv.addEventListener('pointerdown', e => {
+  ptr.x = e.clientX; ptr.y = e.clientY;
+  grabbed = hit(ptr.x, ptr.y);
+  if (grabbed) {
+    meow(grabbed);     grabbed.held = true; grabbed.grabT = grabbed.t; grabbed.state = 'rest'; grabbed.target = null; grabbed.timer = R(1.5, 3);
+    grabbed.hvx = grabbed.hvy = 0;
+    cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing';
+  }
+});
+cv.addEventListener('pointermove', e => {
+  ptr.x = e.clientX; ptr.y = e.clientY;
+  if (!grabbed) cv.style.cursor = hit(ptr.x, ptr.y) ? 'grab' : 'default';
+});
+const drop = () => {
+  if (!grabbed) return;
+  grabbed.held = false;
+  grabbed.z = Math.max(0, grabbed.z - hangDepth(grabbed, grabbed.size * S)); // лапы остаются там, где висели
+  grabbed.vx = clamp(grabbed.hvx * .5, -400, 400); grabbed.vy = clamp(grabbed.hvy * .3, -200, 200);
+  grabbed = null; cv.style.cursor = 'grab';
+};
+cv.addEventListener('pointerup', drop);
+cv.addEventListener('pointercancel', drop);
+
+// ---------- цикл ----------
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(.05, (now - last) / 1000); last = now;
+  for (const c of cats) updateCat(c, dt);
+  for (const f of flies) updateFly(f, dt);
+  updateSky(dt);
+
+  ctx.drawImage(grass, 0, 0, W, H);
+
+  order = cats.slice().sort((a, b) => (a.held - b.held) || (a.y - b.y));
+  if (loaded()) {
+    for (const c of order) drawCat(c);
+    for (const f of flies) drawFly(f);
+  }
+  drawNight(dt);
+  requestAnimationFrame(frame);
+}
+makeGrass();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
